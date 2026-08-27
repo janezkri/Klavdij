@@ -1,3 +1,5 @@
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chalkboard Tic-Tac-Toe</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -141,12 +143,31 @@
   .status .accent-o { color: var(--o-color); }
   .status.win { color: var(--chalk); }
 
+  .role-tag {
+    text-align: center;
+    font-family: 'Space Mono', ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--chalk-dim);
+    margin-bottom: 6px;
+  }
+
   .board-wrap {
     position: relative;
     width: 100%;
-    aspect-ratio: 1;
     max-width: 380px;
     margin: 0 auto;
+    height: 0;
+    padding-bottom: 100%;
+  }
+
+  @supports (aspect-ratio: 1) {
+    .board-wrap {
+      height: auto;
+      padding-bottom: 0;
+      aspect-ratio: 1;
+    }
   }
 
   .board {
@@ -333,6 +354,7 @@
       </div>
     </header>
 
+    <div class="role-tag" id="roleTag">Connecting…</div>
     <div class="status" id="status" role="status" aria-live="polite">
       <span class="accent-x">X</span>&nbsp;to draw
     </div>
@@ -359,6 +381,7 @@
 (function () {
   var boardEl = document.getElementById('board');
   var statusEl = document.getElementById('status');
+  var roleTagEl = document.getElementById('roleTag');
   var winLineEl = document.getElementById('winLine');
   var resetBtn = document.getElementById('resetBtn');
   var resetScoresBtn = document.getElementById('resetScoresBtn');
@@ -366,33 +389,28 @@
   var scoreOEl = document.getElementById('scoreO');
   var scoreDEl = document.getElementById('scoreD');
 
-  var LINES = [
-    [0,1,2],[3,4,5],[6,7,8],
-    [0,3,6],[1,4,7],[2,5,8],
-    [0,4,8],[2,4,6]
-  ];
-
   var cells = [];
-  var board = Array(9).fill(null);
-  var current = 'X';
-  var over = false;
-  var scores = { X: 0, O: 0, D: 0 };
+  var lastVersion = -1;
 
-  function loadScores() {
-    try {
-      var raw = localStorage.getItem('ttt-chalk-scores');
-      if (raw) {
-        var parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.X === 'number') scores = parsed;
-      }
-    } catch (e) {}
+  function getPid() {
+    var pid = sessionStorage.getItem('ttt-pid');
+    if (!pid) {
+      pid = 'p-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+      sessionStorage.setItem('ttt-pid', pid);
+    }
+    return pid;
   }
 
-  function saveScores() {
-    try { localStorage.setItem('ttt-chalk-scores', JSON.stringify(scores)); } catch (e) {}
+  var pid = getPid();
+
+  function api(path, body) {
+    var opts = body
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      : { method: 'GET' };
+    return fetch(path, opts).then(function (r) { return r.json(); });
   }
 
-  function renderScores() {
+  function renderScores(scores) {
     scoreXEl.textContent = scores.X;
     scoreOEl.textContent = scores.O;
     scoreDEl.textContent = scores.D;
@@ -417,6 +435,7 @@
       var btn = document.createElement('button');
       btn.className = 'cell';
       btn.type = 'button';
+      btn.disabled = true;
       btn.setAttribute('aria-label', 'Cell ' + (i + 1));
       btn.addEventListener('click', (function (idx) {
         return function () { play(idx); };
@@ -431,56 +450,77 @@
     statusEl.className = 'status' + (extraClass ? ' ' + extraClass : '');
   }
 
-  function turnStatus() {
-    if (current === 'X') {
-      setStatus('<span class="accent-x">X</span>&nbsp;to draw');
-    } else {
-      setStatus('<span class="accent-o">O</span>&nbsp;to draw');
-    }
-  }
-
   function play(idx) {
-    if (over || board[idx]) return;
-    board[idx] = current;
-    cells[idx].classList.add(current.toLowerCase());
-    cells[idx].innerHTML = current === 'X' ? xMarkSVG() : oMarkSVG();
-    cells[idx].disabled = true;
-
-    var win = checkWin();
-    if (win) {
-      over = true;
-      drawWinLine(win.line);
-      var winner = win.player;
-      scores[winner]++;
-      saveScores();
-      renderScores();
-      var accent = winner === 'X' ? 'accent-x' : 'accent-o';
-      setStatus('<span class="' + accent + '">' + winner + '</span>&nbsp;wins the board', 'win');
-      return;
-    }
-
-    if (board.every(function (c) { return c; })) {
-      over = true;
-      scores.D++;
-      saveScores();
-      renderScores();
-      setStatus('Board full — a draw', 'win');
-      return;
-    }
-
-    current = current === 'X' ? 'O' : 'X';
-    turnStatus();
+    api('/api/move', { pid: pid, index: idx }).then(render);
   }
 
-  function checkWin() {
-    for (var i = 0; i < LINES.length; i++) {
-      var line = LINES[i];
-      var a = board[line[0]], b = board[line[1]], c = board[line[2]];
-      if (a && a === b && b === c) {
-        return { player: a, line: line };
+  function renderRole(state) {
+    if (state.role === 'X') roleTagEl.textContent = 'You are playing X';
+    else if (state.role === 'O') roleTagEl.textContent = 'You are playing O';
+    else roleTagEl.textContent = 'Spectating';
+  }
+
+  function renderStatus(state) {
+    if (state.over) {
+      if (state.winner === 'D') {
+        setStatus('Board full — a draw', 'win');
+      } else {
+        var accent = state.winner === 'X' ? 'accent-x' : 'accent-o';
+        var youWon = state.role === state.winner ? ' — you win!' : '';
+        setStatus('<span class="' + accent + '">' + state.winner + '</span>&nbsp;wins the board' + youWon, 'win');
       }
+      return;
     }
-    return null;
+    if (!state.players.X || !state.players.O) {
+      setStatus('Waiting for a second player to join…');
+      return;
+    }
+    var turnAccent = state.turn === 'X' ? 'accent-x' : 'accent-o';
+    if (state.role === state.turn) {
+      setStatus('<span class="' + turnAccent + '">Your move (' + state.turn + ')</span>');
+    } else if (state.role === 'spectator') {
+      setStatus('<span class="' + turnAccent + '">' + state.turn + '</span>&nbsp;to draw');
+    } else {
+      setStatus('Waiting for <span class="' + turnAccent + '">' + state.turn + '</span>&nbsp;to move');
+    }
+  }
+
+  function renderBoard(state) {
+    for (var i = 0; i < 9; i++) {
+      var mark = state.board[i];
+      var cell = cells[i];
+      if (mark && !cell.classList.contains(mark.toLowerCase())) {
+        cell.classList.add(mark.toLowerCase());
+        cell.innerHTML = mark === 'X' ? xMarkSVG() : oMarkSVG();
+      } else if (!mark) {
+        cell.className = 'cell';
+        cell.innerHTML = '';
+      }
+      var canPlay = !state.over && !mark && state.role === state.turn;
+      cell.disabled = !canPlay;
+    }
+  }
+
+  function render(state) {
+    if (state.error || state.version === lastVersion) return;
+    lastVersion = state.version;
+    renderRole(state);
+    renderStatus(state);
+    renderBoard(state);
+    renderScores(state.scores);
+
+    if (state.over && state.line) {
+      drawWinLine(state.line);
+    } else {
+      winLineEl.classList.remove('show');
+      winLineEl.style.width = '0';
+    }
+  }
+
+  function poll() {
+    api('/api/state?pid=' + encodeURIComponent(pid)).then(render).catch(function () {
+      roleTagEl.textContent = 'Disconnected — retrying…';
+    });
   }
 
   function drawWinLine(line) {
@@ -503,31 +543,27 @@
   }
 
   function newGame() {
-    board = Array(9).fill(null);
-    current = 'X';
-    over = false;
-    cells.forEach(function (cell) {
-      cell.className = 'cell';
-      cell.innerHTML = '';
-      cell.disabled = false;
+    api('/api/new-game', { pid: pid }).then(function (state) {
+      lastVersion = -1;
+      render(state);
     });
-    winLineEl.classList.remove('show');
-    winLineEl.style.width = '0';
-    turnStatus();
   }
 
   function resetScores() {
-    scores = { X: 0, O: 0, D: 0 };
-    saveScores();
-    renderScores();
+    api('/api/reset-scores', { pid: pid }).then(function (state) {
+      lastVersion = -1;
+      render(state);
+    });
   }
 
   resetBtn.addEventListener('click', newGame);
   resetScoresBtn.addEventListener('click', resetScores);
 
   buildBoard();
-  loadScores();
-  renderScores();
-  turnStatus();
+  api('/api/join', { pid: pid }).then(function (state) {
+    lastVersion = -1;
+    render(state);
+    setInterval(poll, 600);
+  });
 })();
 </script>
