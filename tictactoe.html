@@ -275,6 +275,27 @@
   .reset-btn:active { transform: translateY(0); }
   .reset-btn:focus-visible { outline: 2px solid var(--chalk); outline-offset: 3px; }
 
+  footer { gap: 12px; }
+
+  .reset-scores-btn {
+    font-family: 'Archivo', sans-serif;
+    font-weight: 600;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--chalk-dim);
+    background: transparent;
+    border: 1px solid var(--chalk-faint);
+    padding: 10px 22px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+
+  .reset-scores-btn:hover { transform: translateY(-1px); color: var(--chalk); border-color: var(--chalk-dim); }
+  .reset-scores-btn:active { transform: translateY(0); }
+  .reset-scores-btn:focus-visible { outline: 2px solid var(--chalk); outline-offset: 3px; }
+
   @media (prefers-reduced-motion: reduce) {
     .mark-draw { animation: none; stroke-dashoffset: 0; }
     .win-line.show { animation: none; opacity: 1; width: var(--len); }
@@ -329,6 +350,7 @@
 
     <footer>
       <button class="reset-btn" id="resetBtn">New game</button>
+      <button class="reset-scores-btn" id="resetScoresBtn">Reset scores</button>
     </footer>
   </div>
 </div>
@@ -339,6 +361,7 @@
   var statusEl = document.getElementById('status');
   var winLineEl = document.getElementById('winLine');
   var resetBtn = document.getElementById('resetBtn');
+  var resetScoresBtn = document.getElementById('resetScoresBtn');
   var scoreXEl = document.getElementById('scoreX');
   var scoreOEl = document.getElementById('scoreO');
   var scoreDEl = document.getElementById('scoreD');
@@ -493,7 +516,14 @@
     turnStatus();
   }
 
+  function resetScores() {
+    scores = { X: 0, O: 0, D: 0 };
+    saveScores();
+    renderScores();
+  }
+
   resetBtn.addEventListener('click', newGame);
+  resetScoresBtn.addEventListener('click', resetScores);
 
   buildBoard();
   loadScores();
