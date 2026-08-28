@@ -196,6 +196,14 @@ export default async (req) => {
       await saveState(store, state);
       return json(publicState(state, pid));
     }
+
+    if (route === 'reset-all') {
+      // Functions never restart the way the local server.py process does,
+      // so this replicates a server restart: wipe board, players, and scores.
+      const state = defaultState();
+      await saveState(store, state);
+      return json(publicState(state, pid));
+    }
   }
 
   return json({ error: 'not found' }, 404);
