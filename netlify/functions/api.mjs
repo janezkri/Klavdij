@@ -124,7 +124,12 @@ function json(body, status = 200) {
 }
 
 export default async (req) => {
-  const store = getStore('tictactoe');
+  // @netlify/blobs defaults to eventual consistency, which lets a request
+  // read a stale snapshot, mutate it, and write it back — silently
+  // reverting more-recent state (e.g. a just-joined player disappearing).
+  // This is a single small JSON blob read on every request, so the latency
+  // cost of strong consistency is negligible.
+  const store = getStore({ name: 'tictactoe', consistency: 'strong' });
   const url = new URL(req.url);
   const route = url.pathname.replace(/^\/api\/?/, '');
 
