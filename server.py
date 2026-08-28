@@ -3,8 +3,9 @@
 
 Serves the static game page and a tiny JSON API that holds one shared
 game in memory. The first two browsers to join become X and O; anyone
-after that is a spectator. State lives only in this process's memory
-and resets when the server restarts.
+after that is a spectator. Match state lives only in this process's
+memory and resets when the server restarts; the win/loss/draw
+leaderboard is persisted to leaderboard.json and survives restarts.
 """
 
 import json
@@ -18,6 +19,7 @@ ROOT = Path(__file__).parent.resolve()
 PORT = 8000
 MOVE_TIME_LIMIT = 2.0  # seconds a player gets per move before one is picked for them
 MAX_NAME_LEN = 24
+LEADERBOARD_PATH = ROOT / "leaderboard.json"
 
 LINES = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -39,6 +41,56 @@ STATE = {
     "version": 0,
     "deadline": None,  # epoch seconds when the current turn auto-fills; None if timer isn't running
 }
+
+
+def load_leaderboard():
+    try:
+        with open(LEADERBOARD_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+# Persistent per-name win/loss/draw record, survives server restarts (unlike
+# STATE, which is only the current match). Written to disk on every finished
+# game. Guarded by STATE_LOCK, same as everything else.
+LEADERBOARD = load_leaderboard()
+
+
+def save_leaderboard():
+    with open(LEADERBOARD_PATH, "w") as f:
+        json.dump(LEADERBOARD, f)
+
+
+def bump_leaderboard(name, field):
+    record = LEADERBOARD.setdefault(name, {"wins": 0, "losses": 0, "draws": 0})
+    record[field] += 1
+
+
+def record_result():
+    """Update the leaderboard for the just-finished game. Assumes STATE_LOCK is held."""
+    name_x = STATE["names"]["X"] or "X"
+    name_o = STATE["names"]["O"] or "O"
+    if STATE["winner"] == "D":
+        bump_leaderboard(name_x, "draws")
+        bump_leaderboard(name_o, "draws")
+    elif STATE["winner"] == "X":
+        bump_leaderboard(name_x, "wins")
+        bump_leaderboard(name_o, "losses")
+    elif STATE["winner"] == "O":
+        bump_leaderboard(name_o, "wins")
+        bump_leaderboard(name_x, "losses")
+    save_leaderboard()
+
+
+def leaderboard_rows():
+    rows = []
+    for name, r in LEADERBOARD.items():
+        games = r["wins"] + r["losses"] + r["draws"]
+        win_rate = r["wins"] / games if games else 0.0
+        rows.append({"name": name, "wins": r["wins"], "losses": r["losses"], "draws": r["draws"], "win_rate": win_rate})
+    rows.sort(key=lambda r: (-r["wins"], -r["win_rate"], r["name"].lower()))
+    return rows
 
 
 def other(mark):
@@ -63,11 +115,13 @@ def apply_mark(idx, mark):
         STATE["line"] = line
         STATE["scores"][winner] += 1
         clear_deadline()
+        record_result()
     elif all(STATE["board"]):
         STATE["over"] = True
         STATE["winner"] = "D"
         STATE["scores"]["D"] += 1
         clear_deadline()
+        record_result()
     else:
         STATE["turn"] = other(STATE["turn"])
         start_deadline()
@@ -182,6 +236,12 @@ def reset_scores(pid):
     return public_state(pid)
 
 
+def reset_leaderboard():
+    with STATE_LOCK:
+        LEADERBOARD.clear()
+        save_leaderboard()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
@@ -218,6 +278,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json(public_state(pid))
             return
+        if self.path.startswith("/api/leaderboard"):
+            with STATE_LOCK:
+                rows = leaderboard_rows()
+            self._send_json({"rows": rows})
+            return
         self._serve_static()
 
     def do_POST(self):
@@ -247,6 +312,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/reset-scores":
             self._send_json(reset_scores(self._read_json().get("pid")))
+            return
+        if self.path == "/api/reset-leaderboard":
+            reset_leaderboard()
+            self._send_json({"rows": []})
             return
         self.send_response(404)
         self.end_headers()

@@ -237,6 +237,85 @@
 
   .register-card button:hover { transform: translateY(-1px); }
 
+  .leaderboard-card {
+    width: min(90vw, 380px);
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 24px 24px 20px;
+    border-radius: 16px;
+    background: linear-gradient(165deg, var(--slate-1), var(--slate-2) 55%, var(--slate-3));
+    box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.65), inset 0 0 40px rgba(0, 0, 0, 0.4);
+  }
+
+  .leaderboard-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .leaderboard-head h2 {
+    margin: 0;
+    font-family: 'Caveat', cursive;
+    font-weight: 700;
+    font-size: 1.7rem;
+    color: var(--chalk);
+  }
+
+  .leaderboard-close {
+    background: transparent;
+    border: none;
+    color: var(--chalk-dim);
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+
+  .leaderboard-close:hover { color: var(--chalk); }
+
+  .leaderboard-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'Space Mono', ui-monospace, monospace;
+    font-size: 0.85rem;
+  }
+
+  .leaderboard-table th {
+    text-align: left;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--chalk-dim);
+    padding: 0 8px 8px 0;
+    border-bottom: 1px solid var(--chalk-faint);
+  }
+
+  .leaderboard-table th:not(:first-child),
+  .leaderboard-table td:not(:first-child) {
+    text-align: right;
+  }
+
+  .leaderboard-table td {
+    padding: 7px 8px 7px 0;
+    color: var(--chalk);
+    border-bottom: 1px solid rgba(243, 237, 225, 0.08);
+  }
+
+  .leaderboard-table td:first-child {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .leaderboard-empty {
+    text-align: center;
+    color: var(--chalk-dim);
+    font-size: 0.85rem;
+    margin: 10px 0 2px;
+  }
+
   .timer-track {
     width: 100%;
     max-width: 380px;
@@ -478,6 +557,7 @@
     <footer>
       <button class="reset-btn" id="resetBtn">New game</button>
       <button class="reset-scores-btn" id="resetScoresBtn">Reset scores</button>
+      <button class="reset-scores-btn" id="leaderboardBtn">Leaderboard</button>
     </footer>
   </div>
 </div>
@@ -490,6 +570,22 @@
   </div>
 </div>
 
+<div class="register-overlay hidden" id="leaderboardOverlay">
+  <div class="leaderboard-card">
+    <div class="leaderboard-head">
+      <h2>Leaderboard</h2>
+      <button type="button" class="leaderboard-close" id="leaderboardCloseBtn" aria-label="Close leaderboard">&times;</button>
+    </div>
+    <table class="leaderboard-table">
+      <thead>
+        <tr><th>Name</th><th>W</th><th>L</th><th>D</th></tr>
+      </thead>
+      <tbody id="leaderboardBody"></tbody>
+    </table>
+    <p class="leaderboard-empty" id="leaderboardEmpty">No games finished yet.</p>
+  </div>
+</div>
+
 <script>
 (function () {
   var boardEl = document.getElementById('board');
@@ -497,6 +593,11 @@
   var roleTagEl = document.getElementById('roleTag');
   var resetBtn = document.getElementById('resetBtn');
   var resetScoresBtn = document.getElementById('resetScoresBtn');
+  var leaderboardBtn = document.getElementById('leaderboardBtn');
+  var leaderboardOverlayEl = document.getElementById('leaderboardOverlay');
+  var leaderboardCloseBtn = document.getElementById('leaderboardCloseBtn');
+  var leaderboardBodyEl = document.getElementById('leaderboardBody');
+  var leaderboardEmptyEl = document.getElementById('leaderboardEmpty');
   var scoreXEl = document.getElementById('scoreX');
   var scoreOEl = document.getElementById('scoreO');
   var scoreDEl = document.getElementById('scoreD');
@@ -594,6 +695,38 @@
     return span;
   }
 
+  function renderLeaderboard(rows) {
+    leaderboardBodyEl.innerHTML = '';
+    leaderboardEmptyEl.style.display = rows.length ? 'none' : 'block';
+    rows.forEach(function (r) {
+      var tr = document.createElement('tr');
+      var nameTd = document.createElement('td');
+      nameTd.textContent = r.name; // untrusted player input, textContent only
+      tr.appendChild(nameTd);
+      [r.wins, r.losses, r.draws].forEach(function (n) {
+        var td = document.createElement('td');
+        td.textContent = n;
+        tr.appendChild(td);
+      });
+      leaderboardBodyEl.appendChild(tr);
+    });
+  }
+
+  function fetchLeaderboard() {
+    api('/api/leaderboard').then(function (data) {
+      renderLeaderboard(data.rows || []);
+    });
+  }
+
+  function openLeaderboard() {
+    fetchLeaderboard();
+    leaderboardOverlayEl.classList.remove('hidden');
+  }
+
+  function closeLeaderboard() {
+    leaderboardOverlayEl.classList.add('hidden');
+  }
+
   function renderMatchup(state) {
     matchupEl.innerHTML = '';
     var names = state.names || {};
@@ -657,6 +790,10 @@
     renderBoard(state);
     renderScores(state.scores);
 
+    if (state.over && !leaderboardOverlayEl.classList.contains('hidden')) {
+      fetchLeaderboard();
+    }
+
     if (!state.over && typeof state.time_left === 'number') {
       timeLimit = state.time_limit || timeLimit;
       deadlineAt = Date.now() + state.time_left * 1000;
@@ -714,6 +851,11 @@
 
   resetBtn.addEventListener('click', newGame);
   resetScoresBtn.addEventListener('click', resetScores);
+  leaderboardBtn.addEventListener('click', openLeaderboard);
+  leaderboardCloseBtn.addEventListener('click', closeLeaderboard);
+  leaderboardOverlayEl.addEventListener('click', function (e) {
+    if (e.target === leaderboardOverlayEl) closeLeaderboard();
+  });
 
   function joinGame(name) {
     registerOverlayEl.classList.add('hidden');

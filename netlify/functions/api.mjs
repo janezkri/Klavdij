@@ -12,6 +12,7 @@ const LINES = [
 const MOVE_TIME_LIMIT = 2; // seconds
 const MAX_NAME_LEN = 24;
 const STATE_KEY = 'state';
+const LEADERBOARD_KEY = 'leaderboard';
 
 function defaultState() {
   return {
@@ -121,6 +122,48 @@ async function saveState(store, state) {
   await store.setJSON(STATE_KEY, state);
 }
 
+// Persistent per-name win/loss/draw record, kept in its own blob so it
+// survives reset-all (which only wipes the current match's STATE_KEY blob).
+async function loadLeaderboard(store) {
+  const raw = await store.get(LEADERBOARD_KEY, { type: 'json' });
+  return raw || {};
+}
+
+async function saveLeaderboard(store, board) {
+  await store.setJSON(LEADERBOARD_KEY, board);
+}
+
+function bumpLeaderboard(board, name, field) {
+  if (!board[name]) board[name] = { wins: 0, losses: 0, draws: 0 };
+  board[name][field] += 1;
+}
+
+async function recordResult(store, state) {
+  const nameX = state.names.X || 'X';
+  const nameO = state.names.O || 'O';
+  const board = await loadLeaderboard(store);
+  if (state.winner === 'D') {
+    bumpLeaderboard(board, nameX, 'draws');
+    bumpLeaderboard(board, nameO, 'draws');
+  } else if (state.winner === 'X') {
+    bumpLeaderboard(board, nameX, 'wins');
+    bumpLeaderboard(board, nameO, 'losses');
+  } else if (state.winner === 'O') {
+    bumpLeaderboard(board, nameO, 'wins');
+    bumpLeaderboard(board, nameX, 'losses');
+  }
+  await saveLeaderboard(store, board);
+}
+
+function leaderboardRows(board) {
+  const rows = Object.entries(board).map(([name, r]) => {
+    const games = r.wins + r.losses + r.draws;
+    return { name, wins: r.wins, losses: r.losses, draws: r.draws, win_rate: games ? r.wins / games : 0 };
+  });
+  rows.sort((a, b) => b.wins - a.wins || b.win_rate - a.win_rate || a.name.localeCompare(b.name));
+  return rows;
+}
+
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -138,11 +181,18 @@ export default async (req) => {
   const url = new URL(req.url);
   const route = url.pathname.replace(/^\/api\/?/, '');
 
+  if (req.method === 'GET' && route === 'leaderboard') {
+    const board = await loadLeaderboard(store);
+    return json({ rows: leaderboardRows(board) });
+  }
+
   if (req.method === 'GET' && route === 'state') {
     const pid = url.searchParams.get('pid');
     if (!pid) return json({ error: 'missing pid' }, 400);
     const state = await loadState(store);
+    const wasOver = state.over;
     checkTimeout(state);
+    if (!wasOver && state.over) await recordResult(store, state);
     await saveState(store, state);
     return json(publicState(state, pid));
   }
@@ -157,7 +207,9 @@ export default async (req) => {
       if (!pid) return json({ error: 'missing pid' }, 400);
       if (!name) return json({ error: 'missing name' }, 400);
       const state = await loadState(store);
+      const wasOver = state.over;
       checkTimeout(state);
+      if (!wasOver && state.over) await recordResult(store, state);
       if (state.players.X !== pid && state.players.O !== pid) {
         if (!state.players.X) { state.players.X = pid; state.names.X = name; state.version += 1; }
         else if (!state.players.O) { state.players.O = pid; state.names.O = name; state.version += 1; }
@@ -173,11 +225,17 @@ export default async (req) => {
       const idx = body.index;
       if (!pid || typeof idx !== 'number') return json({ error: 'bad request' }, 400);
       const state = await loadState(store);
+      const wasOver = state.over;
       checkTimeout(state);
-      const role = roleFor(state, pid);
-      if ((role === 'X' || role === 'O') && role === state.turn && !state.over
-        && idx >= 0 && idx <= 8 && state.board[idx] == null) {
-        applyMark(state, idx, role);
+      if (!wasOver && state.over) {
+        await recordResult(store, state);
+      } else if (!state.over) {
+        const role = roleFor(state, pid);
+        if ((role === 'X' || role === 'O') && role === state.turn
+          && idx >= 0 && idx <= 8 && state.board[idx] == null) {
+          applyMark(state, idx, role);
+          if (state.over) await recordResult(store, state);
+        }
       }
       await saveState(store, state);
       return json(publicState(state, pid));
@@ -207,6 +265,11 @@ export default async (req) => {
       state.version += 1;
       await saveState(store, state);
       return json(publicState(state, pid));
+    }
+
+    if (route === 'reset-leaderboard') {
+      await saveLeaderboard(store, {});
+      return json({ rows: [] });
     }
 
     if (route === 'reset-all') {
