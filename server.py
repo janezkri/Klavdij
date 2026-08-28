@@ -8,12 +8,15 @@ and resets when the server restarts.
 """
 
 import json
+import random
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
 PORT = 8000
+MOVE_TIME_LIMIT = 2.0  # seconds a player gets per move before one is picked for them
 
 LINES = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -25,13 +28,58 @@ STATE_LOCK = threading.Lock()
 STATE = {
     "board": [None] * 9,
     "turn": "X",
+    "starter": "X",  # who opened the current game, used to pick the next starter
     "over": False,
     "winner": None,   # 'X' | 'O' | 'D' | None
     "line": None,
     "players": {"X": None, "O": None},
     "scores": {"X": 0, "O": 0, "D": 0},
     "version": 0,
+    "deadline": None,  # epoch seconds when the current turn auto-fills; None if timer isn't running
 }
+
+
+def other(mark):
+    return "O" if mark == "X" else "X"
+
+
+def start_deadline():
+    STATE["deadline"] = time.time() + MOVE_TIME_LIMIT
+
+
+def clear_deadline():
+    STATE["deadline"] = None
+
+
+def apply_mark(idx, mark):
+    """Place a mark and resolve the game. Assumes STATE_LOCK is held."""
+    STATE["board"][idx] = mark
+    winner, line = check_win(STATE["board"])
+    if winner:
+        STATE["over"] = True
+        STATE["winner"] = winner
+        STATE["line"] = line
+        STATE["scores"][winner] += 1
+        clear_deadline()
+    elif all(STATE["board"]):
+        STATE["over"] = True
+        STATE["winner"] = "D"
+        STATE["scores"]["D"] += 1
+        clear_deadline()
+    else:
+        STATE["turn"] = other(STATE["turn"])
+        start_deadline()
+    STATE["version"] += 1
+
+
+def check_timeout():
+    """Auto-play a random empty cell if the current turn's clock ran out. Assumes STATE_LOCK is held."""
+    if STATE["over"] or STATE["deadline"] is None:
+        return
+    if time.time() >= STATE["deadline"]:
+        empties = [i for i, v in enumerate(STATE["board"]) if v is None]
+        if empties:
+            apply_mark(random.choice(empties), STATE["turn"])
 
 
 def check_win(board):
@@ -52,6 +100,10 @@ def role_for(pid):
 
 def public_state(pid):
     with STATE_LOCK:
+        check_timeout()
+        time_left = None
+        if not STATE["over"] and STATE["deadline"] is not None:
+            time_left = max(0.0, STATE["deadline"] - time.time())
         return {
             "board": STATE["board"],
             "turn": STATE["turn"],
@@ -65,11 +117,14 @@ def public_state(pid):
                 "X": STATE["players"]["X"] is not None,
                 "O": STATE["players"]["O"] is not None,
             },
+            "time_left": time_left,
+            "time_limit": MOVE_TIME_LIMIT,
         }
 
 
 def join(pid):
     with STATE_LOCK:
+        check_timeout()
         if STATE["players"]["X"] != pid and STATE["players"]["O"] != pid:
             if STATE["players"]["X"] is None:
                 STATE["players"]["X"] = pid
@@ -77,39 +132,40 @@ def join(pid):
             elif STATE["players"]["O"] is None:
                 STATE["players"]["O"] = pid
                 STATE["version"] += 1
+            if STATE["players"]["X"] and STATE["players"]["O"] and STATE["deadline"] is None and not STATE["over"]:
+                start_deadline()
     return public_state(pid)
 
 
 def move(pid, idx):
     with STATE_LOCK:
+        check_timeout()
         role = role_for(pid)
         if role in ("X", "O") and not STATE["over"] and STATE["turn"] == role:
             if 0 <= idx <= 8 and STATE["board"][idx] is None:
-                STATE["board"][idx] = role
-                winner, line = check_win(STATE["board"])
-                if winner:
-                    STATE["over"] = True
-                    STATE["winner"] = winner
-                    STATE["line"] = line
-                    STATE["scores"][winner] += 1
-                elif all(STATE["board"]):
-                    STATE["over"] = True
-                    STATE["winner"] = "D"
-                    STATE["scores"]["D"] += 1
-                else:
-                    STATE["turn"] = "O" if STATE["turn"] == "X" else "X"
-                STATE["version"] += 1
+                apply_mark(idx, role)
     return public_state(pid)
 
 
 def new_game(pid):
     with STATE_LOCK:
+        if STATE["winner"] in ("X", "O"):
+            next_starter = other(STATE["winner"])  # loser opens the next game
+        elif STATE["winner"] == "D":
+            next_starter = other(STATE["starter"])  # no loser on a draw, alternate
+        else:
+            next_starter = STATE["starter"]
         STATE["board"] = [None] * 9
-        STATE["turn"] = "X"
+        STATE["turn"] = next_starter
+        STATE["starter"] = next_starter
         STATE["over"] = False
         STATE["winner"] = None
         STATE["line"] = None
         STATE["version"] += 1
+        if STATE["players"]["X"] and STATE["players"]["O"]:
+            start_deadline()
+        else:
+            clear_deadline()
     return public_state(pid)
 
 
@@ -209,7 +265,15 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _timeout_watcher():
+    while True:
+        time.sleep(0.15)
+        with STATE_LOCK:
+            check_timeout()
+
+
 if __name__ == "__main__":
+    threading.Thread(target=_timeout_watcher, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Serving Tic-Tac-Toe on http://0.0.0.0:{PORT}")
     server.serve_forever()
