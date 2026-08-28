@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.resolve()
 PORT = 8000
 MOVE_TIME_LIMIT = 2.0  # seconds a player gets per move before one is picked for them
+MAX_NAME_LEN = 24
 
 LINES = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -33,6 +34,7 @@ STATE = {
     "winner": None,   # 'X' | 'O' | 'D' | None
     "line": None,
     "players": {"X": None, "O": None},
+    "names": {"X": None, "O": None},  # display name registered by each player
     "scores": {"X": 0, "O": 0, "D": 0},
     "version": 0,
     "deadline": None,  # epoch seconds when the current turn auto-fills; None if timer isn't running
@@ -117,20 +119,24 @@ def public_state(pid):
                 "X": STATE["players"]["X"] is not None,
                 "O": STATE["players"]["O"] is not None,
             },
+            "names": dict(STATE["names"]),
             "time_left": time_left,
             "time_limit": MOVE_TIME_LIMIT,
         }
 
 
-def join(pid):
+def join(pid, name):
+    name = (name or "").strip()[:MAX_NAME_LEN]
     with STATE_LOCK:
         check_timeout()
         if STATE["players"]["X"] != pid and STATE["players"]["O"] != pid:
             if STATE["players"]["X"] is None:
                 STATE["players"]["X"] = pid
+                STATE["names"]["X"] = name or "X"
                 STATE["version"] += 1
             elif STATE["players"]["O"] is None:
                 STATE["players"]["O"] = pid
+                STATE["names"]["O"] = name or "O"
                 STATE["version"] += 1
             if STATE["players"]["X"] and STATE["players"]["O"] and STATE["deadline"] is None and not STATE["over"]:
                 start_deadline()
@@ -216,11 +222,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/join":
-            pid = self._read_json().get("pid")
+            data = self._read_json()
+            pid = data.get("pid")
+            name = data.get("name")
             if not pid:
                 self._send_json({"error": "missing pid"}, 400)
                 return
-            self._send_json(join(pid))
+            if not name or not str(name).strip():
+                self._send_json({"error": "missing name"}, 400)
+                return
+            self._send_json(join(pid, name))
             return
         if self.path == "/api/move":
             data = self._read_json()

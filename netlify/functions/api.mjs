@@ -10,6 +10,7 @@ const LINES = [
   [0, 4, 8], [2, 4, 6],
 ];
 const MOVE_TIME_LIMIT = 2; // seconds
+const MAX_NAME_LEN = 24;
 const STATE_KEY = 'state';
 
 function defaultState() {
@@ -21,6 +22,7 @@ function defaultState() {
     winner: null,
     line: null,
     players: { X: null, O: null },
+    names: { X: null, O: null }, // display name registered by each player
     scores: { X: 0, O: 0, D: 0 },
     version: 0,
     deadline: null, // epoch ms when the current turn auto-fills; null if timer isn't running
@@ -102,6 +104,7 @@ function publicState(state, pid) {
     version: state.version,
     role: roleFor(state, pid),
     players: { X: !!state.players.X, O: !!state.players.O },
+    names: { X: state.names.X, O: state.names.O },
     time_left: timeLeft,
     time_limit: MOVE_TIME_LIMIT,
   };
@@ -109,7 +112,9 @@ function publicState(state, pid) {
 
 async function loadState(store) {
   const raw = await store.get(STATE_KEY, { type: 'json' });
-  return raw || defaultState();
+  if (!raw) return defaultState();
+  if (!raw.names) raw.names = { X: null, O: null }; // tolerate state saved before names existed
+  return raw;
 }
 
 async function saveState(store, state) {
@@ -148,12 +153,14 @@ export default async (req) => {
     const pid = body.pid;
 
     if (route === 'join') {
+      const name = typeof body.name === 'string' ? body.name.trim().slice(0, MAX_NAME_LEN) : '';
       if (!pid) return json({ error: 'missing pid' }, 400);
+      if (!name) return json({ error: 'missing name' }, 400);
       const state = await loadState(store);
       checkTimeout(state);
       if (state.players.X !== pid && state.players.O !== pid) {
-        if (!state.players.X) { state.players.X = pid; state.version += 1; }
-        else if (!state.players.O) { state.players.O = pid; state.version += 1; }
+        if (!state.players.X) { state.players.X = pid; state.names.X = name; state.version += 1; }
+        else if (!state.players.O) { state.players.O = pid; state.names.O = name; state.version += 1; }
         if (state.players.X && state.players.O && state.deadline == null && !state.over) {
           startDeadline(state);
         }
